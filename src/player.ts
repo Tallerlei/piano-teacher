@@ -1,7 +1,7 @@
 import { play, unlockAudio, type Transport } from './music/audio';
 import { createKeyboard, keyboardRange, type KeyMark } from './music/keyboard';
 import { parsePiece } from './music/parse';
-import { renderStaff } from './music/staff';
+import { renderStaff, type SystemBox } from './music/staff';
 import type { Hand, ParsedPiece, Piece } from './music/types';
 import { save, state } from './state';
 import { h } from './ui';
@@ -27,7 +27,10 @@ export function createPlayer(piece: Piece): PlayerHandle {
   let selection: [number, number] | null = null;
   let transport: Transport | null = null;
   let noteEls = new Map<string, SVGGElement>();
+  let systems: SystemBox[] = [];
+  let currentSystem = -1;
   let lit = new Set<string>();
+  const eventMeasure = new Map(parsed.events.map((e) => [e.id, e.measure]));
 
   const hasRh = !!piece.rh;
   const hasLh = !!piece.lh;
@@ -48,15 +51,29 @@ export function createPlayer(piece: Piece): PlayerHandle {
   };
   showStartPosition();
 
+  const MIN_SCALE = 0.7;
   const draw = () => {
-    const width = staffBox.clientWidth || 700;
-    const r = renderStaff(parsed, {
-      width: width - 4,
+    const width = (staffBox.clientWidth || 700) - 4;
+    const height = staffBox.clientHeight - 12;
+    const render = (scale: number) => renderStaff(parsed, {
+      width,
+      scale,
       showNoteNames: state.settings.noteNames,
       showFingers: state.settings.fingers,
       selection,
     });
+    // shrink the notation (within limits) so the current line *and the next one* fit on screen
+    let scale = 1;
+    let r = render(scale);
+    for (let i = 0; i < 4 && height > 0; i++) {
+      const need = twoLineHeight(r.systems);
+      if (need <= height + 1 || scale <= MIN_SCALE) break;
+      scale = Math.max(MIN_SCALE, (scale * height) / need);
+      r = render(scale);
+    }
     noteEls = r.noteEls;
+    systems = r.systems;
+    currentSystem = -1;
     lit = new Set();
     staffBox.replaceChildren(r.svg);
   };
@@ -137,17 +154,23 @@ export function createPlayer(piece: Piece): PlayerHandle {
 
   const onFrame = (evs: Set<string>, keys: Map<number, Hand>) => {
     for (const id of lit) if (!evs.has(id)) noteEls.get(id)?.classList.remove('playing');
-    let firstNew: SVGGElement | undefined;
+    let measure = Infinity;
     for (const id of evs) {
-      if (!lit.has(id)) {
-        const n = noteEls.get(id);
-        n?.classList.add('playing');
-        firstNew ??= n;
-      }
+      if (!lit.has(id)) noteEls.get(id)?.classList.add('playing');
+      measure = Math.min(measure, eventMeasure.get(id) ?? Infinity);
     }
     lit = evs;
     keyboard.setActive(keys);
-    if (firstNew) scrollIntoViewIfNeeded(staffBox, firstNew);
+    if (measure !== Infinity) followSystem(measure);
+  };
+
+  // "page turn": when playback reaches a new line, bring it to the top so the next line shows below it
+  const followSystem = (measure: number) => {
+    const i = systems.findIndex((s) => measure >= s.firstMeasure && measure <= s.lastMeasure);
+    if (i < 0 || i === currentSystem) return;
+    currentSystem = i;
+    const top = Math.max(0, systems[i]!.top - 4);
+    if (Math.abs(staffBox.scrollTop - top) > 2) staffBox.scrollTo({ top, behavior: 'smooth' });
   };
 
   const start = async () => {
@@ -199,9 +222,11 @@ export function createPlayer(piece: Piece): PlayerHandle {
   const el = h('div', { class: 'player' }, header, staffBox, controls, kbBox);
 
   let lastWidth = 0;
+  let lastHeight = 0;
   const ro = new ResizeObserver(() => {
-    if (staffBox.clientWidth !== lastWidth) {
+    if (staffBox.clientWidth !== lastWidth || Math.abs(staffBox.clientHeight - lastHeight) > 8) {
       lastWidth = staffBox.clientWidth;
+      lastHeight = staffBox.clientHeight;
       draw();
     }
   });
@@ -216,10 +241,10 @@ export function createPlayer(piece: Piece): PlayerHandle {
   };
 }
 
-function scrollIntoViewIfNeeded(container: HTMLElement, target: Element) {
-  const c = container.getBoundingClientRect();
-  const t = target.getBoundingClientRect();
-  if (t.top < c.top + 20 || t.bottom > c.bottom - 20) {
-    container.scrollBy({ top: t.top - c.top - 60, behavior: 'smooth' });
-  }
+/** Tallest span of two consecutive lines (or the single line if there is only one). */
+function twoLineHeight(systems: SystemBox[]): number {
+  if (systems.length < 2) return systems[0] ? systems[0].bottom - systems[0].top : 0;
+  let max = 0;
+  for (let i = 0; i < systems.length - 1; i++) max = Math.max(max, systems[i + 1]!.bottom - systems[i]!.top);
+  return max;
 }

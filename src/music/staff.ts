@@ -10,11 +10,21 @@ export interface StaffOptions {
   showNoteNames: boolean;
   showFingers: boolean;
   selection?: [number, number] | null;
+  /** zoom factor (<1 = smaller notation, more bars per line) */
+  scale?: number;
+}
+
+export interface SystemBox {
+  top: number; // in rendered px
+  bottom: number;
+  firstMeasure: number;
+  lastMeasure: number;
 }
 
 export interface StaffRender {
   svg: SVGSVGElement;
   noteEls: Map<string, SVGGElement>;
+  systems: SystemBox[];
 }
 
 type StaffKind = 'treble' | 'bass';
@@ -59,12 +69,14 @@ export function renderStaff(parsed: ParsedPiece, opts: StaffOptions): StaffRende
   if (hasLh) staves.push('bass');
   const staffOf = (e: NoteEvent): StaffKind => (e.hand === 'rh' ? 'treble' : 'bass');
 
-  const width = Math.max(320, opts.width);
+  const scale = opts.scale ?? 1;
+  const width = Math.max(320, opts.width / scale);
   const mpl = measuresPerLine(parsed, width);
   const keyCount = keySignatureCount(piece.key);
   const keyAlters = keyAlterations(piece.key);
 
-  const svg = el('svg', { class: 'staff', width });
+  const svg = el('svg', { class: 'staff', width: width * scale });
+  const systems: SystemBox[] = [];
   const noteEls = new Map<string, SVGGElement>();
   const ksWidth = Math.abs(keyCount) * 9;
 
@@ -365,11 +377,12 @@ export function renderStaff(parsed: ParsedPiece, opts: StaffOptions): StaffRende
       }
     }
 
+    systems.push({ top: y * scale, bottom: sysBottom * scale, firstMeasure: first, lastMeasure: last });
     y = sysBottom;
   }
-  svg.setAttribute('height', String(Math.ceil(y)));
+  svg.setAttribute('height', String(Math.ceil(y * scale)));
   svg.setAttribute('viewBox', `0 0 ${width} ${Math.ceil(y)}`);
-  return { svg, noteEls };
+  return { svg, noteEls, systems };
 }
 
 function drawRest(g: SVGGElement, e: NoteEvent, x: number, top: number) {
